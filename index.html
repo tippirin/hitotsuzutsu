@@ -208,6 +208,25 @@ textarea.field{resize:none;line-height:1.5;display:block}
 .btn.danger{flex:none;background:none;color:var(--warn);padding:12px 8px}
 .lab{font-size:.75rem;color:var(--muted);margin-bottom:6px;display:block}
 
+/* reminders */
+.rems{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.rem{display:flex;gap:8px;align-items:center}
+.rem .field{padding:8px 10px;min-width:0}
+.rem .rd{flex:1 1 150px}
+.rem .rt{flex:1 1 110px}
+.sub{margin:6px 2px 0;font-size:.75rem;color:var(--muted);line-height:1.5}
+.chip.bell{display:inline-flex;align-items:center;gap:3px}
+.chip.bell.warn{background:var(--warn-soft);color:var(--warn)}
+.calrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:var(--bg);border-radius:12px}
+.calrow .when{font:500 .9375rem/1.4 var(--mono);font-variant-numeric:tabular-nums;min-width:0}
+.calrow .when small{display:block;font:400 .75rem/1.4 var(--body);color:var(--muted)}
+.calrow .when small.ok{color:var(--accent-ink);font-weight:700}
+.calgo{flex:none;padding:10px 16px;border-radius:12px;background:var(--accent);color:var(--accent-fg);font-weight:700;font-size:.875rem;text-decoration:none}
+.calgo.again{background:var(--surface-2);color:var(--fg)}
+.calh{margin:0;font:700 1.125rem/1.4 var(--display)}
+.calp{margin:0;font-size:.8125rem;color:var(--muted);line-height:1.6}
+.calp b{color:var(--fg)}
+
 /* undo toast */
 .toast{position:fixed;left:0;right:0;z-index:12;margin:0 auto;max-width:calc(560px - 32px);width:calc(100% - 32px);
   bottom:calc(84px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);border-radius:12px;
@@ -265,12 +284,22 @@ textarea.field{resize:none;line-height:1.5;display:block}
     <span class="lab">曜日</span>
     <div class="chips" id="dayPicks" role="group" aria-label="曜日"></div>
   </div>
+  <div id="remBox">
+    <span class="lab">通知</span>
+    <div class="rems" id="rems"></div>
+    <div class="chips">
+      <button type="button" class="pick" data-act="radd">＋ 通知を追加</button>
+      <button type="button" class="pick" id="calBtn" data-act="calfrom" hidden>カレンダーに登録</button>
+    </div>
+    <p class="sub" id="remHint"></p>
+  </div>
   <div class="acts">
     <button type="button" class="btn danger" id="delBtn" data-act="del" hidden>削除</button>
     <button type="button" class="btn" data-act="close">キャンセル</button>
     <button type="submit" class="btn main" id="saveBtn">追加</button>
   </div>
 </form>
+<div class="sheet" id="calSheet" hidden role="dialog" aria-label="カレンダーに登録"></div>
 <div class="toast" id="toast" role="status" hidden><span id="toastMsg"></span><button type="button" data-act="undo">元に戻す</button></div>
 
 <script>
@@ -300,6 +329,87 @@ function colorKey(t){
   var i;
   for(i=0;i<COLORS.length;i++){if(COLORS[i][0]===t.color)return t.color}
   return 'teal';
+}
+
+/* ---------- reminders (delivered through the phone's calendar) ---------- */
+var BELL='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 21h4"/></svg>';
+var BYDAY=['SU','MO','TU','WE','TH','FR','SA'];
+function validT(s){return /^\d{2}:\d{2}$/.test(s||'')}
+function validD(s){return /^\d{4}-\d{2}-\d{2}$/.test(s||'')}
+function at(d,t){var p=parse(d),q=t.split(':');p.setHours(+q[0],+q[1],0,0);return p}
+function stamp(dt){return dt.getFullYear()+pad(dt.getMonth()+1)+pad(dt.getDate())+'T'+pad(dt.getHours())+pad(dt.getMinutes())+'00'}
+function hm(t){var q=t.split(':');return (+q[0])+':'+q[1]}
+function remLabel(type,r,item){
+  if(type==='habit')return hdays(item)+' '+hm(r.t);
+  return md(r.d)+'（'+DAYS[parse(r.d).getDay()]+'） '+hm(r.t);
+}
+function isPast(type,r){return type==='task'&&at(r.d,r.t)<new Date()}
+function pendingRems(type,item){
+  return (item.rems||[]).filter(function(r){return !r.reg&&!isPast(type,r)}).length;
+}
+function habitStart(h){
+  var d=today,i;
+  for(i=0;i<7;i++){if(isTarget(h,d))return d;d=addDays(d,1)}
+  return today;
+}
+function habitRule(h){
+  if(!h.days||!h.days.length||h.days.length>=7)return 'FREQ=DAILY';
+  return 'FREQ=WEEKLY;BYDAY='+h.days.map(function(d){return BYDAY[d]}).join(',');
+}
+function remEvent(type,item,r){
+  var o={};
+  if(type==='habit'){
+    o.title='習慣：'+item.name;
+    o.start=at(habitStart(item),r.t);
+    o.rule=habitRule(item);
+    o.details='「ひとつずつ」の習慣（'+hdays(item)+'）';
+  }else{
+    o.title=item.text;
+    o.start=at(r.d,r.t);
+    o.rule=null;
+    o.details=(item.memo?item.memo+'\n\n':'')+(item.due?'期限：'+md(item.due)+'（'+DAYS[parse(item.due).getDay()]+'）\n':'')+'「ひとつずつ」のタスク';
+  }
+  o.end=new Date(o.start.getTime()+15*60000);
+  return o;
+}
+function tzName(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){return ''}}
+function gcalUrl(ev){
+  var u='https://calendar.google.com/calendar/r/eventedit?text='+encodeURIComponent(ev.title)+
+    '&dates='+stamp(ev.start)+'/'+stamp(ev.end)+'&details='+encodeURIComponent(ev.details);
+  var tz=tzName();
+  if(tz)u+='&ctz='+encodeURIComponent(tz);
+  if(ev.rule)u+='&recur='+encodeURIComponent('RRULE:'+ev.rule);
+  return u;
+}
+function icsText(s){return String(s).replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n')}
+function buildIcs(type,item){
+  var now=new Date(), z=now.toISOString().replace(/[-:]/g,'').replace(/\.\d+/,'');
+  var L=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//hitotsuzutsu//JA','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
+  (item.rems||[]).forEach(function(r,i){
+    if(isPast(type,r))return;
+    var ev=remEvent(type,item,r);
+    L.push('BEGIN:VEVENT','UID:'+item.id+'-'+i+'-'+stamp(ev.start)+'@hitotsuzutsu','DTSTAMP:'+z,
+      'DTSTART:'+stamp(ev.start),'DTEND:'+stamp(ev.end),'SUMMARY:'+icsText(ev.title),'DESCRIPTION:'+icsText(ev.details));
+    if(ev.rule)L.push('RRULE:'+ev.rule);
+    L.push('BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+icsText(ev.title),'TRIGGER:PT0S','END:VALARM','END:VEVENT');
+  });
+  L.push('END:VCALENDAR');
+  return L.join('\r\n')+'\r\n';
+}
+function cleanRems(type,list){
+  var seen={},out=[];
+  list.forEach(function(r){
+    if(!validT(r.t))return;
+    if(type==='task'&&!validD(r.d))return;
+    var k=type==='habit'?r.t:r.d+' '+r.t;
+    if(seen[k])return;
+    seen[k]=1;
+    var o={t:r.t,reg:!!r.reg};
+    if(type==='task')o.d=r.d;
+    out.push(o);
+  });
+  out.sort(function(a,b){return ((a.d||'')+a.t).localeCompare((b.d||'')+b.t)});
+  return out;
 }
 
 var today=ymd(new Date());
@@ -695,7 +805,12 @@ function habitRow(h){
   var on=done(h.id,today), s=streak(h);
   return '<li class="row has-grip'+(on?' is-done':'')+'" data-item="'+h.id+'" data-kind="habit">'+GRIP+
     '<button class="check" data-act="th" data-id="'+h.id+'" data-date="'+today+'" aria-pressed="'+on+'" aria-label="'+esc(h.name)+'">'+CHECK+'</button>'+
-    '<div class="t"><span>'+esc(h.name)+'</span><small>'+(s>0?'連続 '+s+'日':'今日から始めよう')+'</small></div></li>';
+    '<div class="t"><span>'+esc(h.name)+'</span><small>'+(s>0?'連続 '+s+'日':'今日から始めよう')+'</small></div>'+habitBell(h)+'</li>';
+}
+function habitBell(h){
+  if(!h.rems||!h.rems.length)return '';
+  var pend=pendingRems('habit',h);
+  return '<span class="chip bell'+(pend?' warn':'')+'" title="'+(pend?'カレンダー未登録の通知があります':'通知')+'">'+BELL+h.rems.map(function(r){return hm(r.t)}).join(' ')+'</span>';
 }
 /* zone: today | week | list | done */
 function taskRow(t,zone){
@@ -706,6 +821,10 @@ function taskRow(t,zone){
     else if(zone==='list')chip='<span class="chip '+di.cls+'">'+di.label+'</span>';
   }
   var memo=t.memo?'<small class="memo">'+esc(firstLine(t.memo))+'</small>':'';
+  if(!t.done&&t.rems&&t.rems.length){
+    var pend=pendingRems('task',t);
+    chip='<span class="chip bell'+(pend?' warn':'')+'" title="'+(pend?'カレンダー未登録の通知があります':'通知')+'">'+BELL+t.rems.length+'</span>'+chip;
+  }
   return '<li class="row tint'+(grip?' has-grip':'')+(t.done?' is-done':'')+'" data-item="'+t.id+'" data-kind="task" style="--tc:var(--c-'+c+')">'+
     (grip?GRIP:'')+
     '<button class="check sq" data-act="tt" data-id="'+t.id+'" aria-pressed="'+t.done+'" aria-label="'+esc(t.text)+'を完了にする">'+CHECK+'</button>'+
@@ -776,7 +895,8 @@ function renderHabits(){
         '<span class="dl">'+DAYS[p.getDay()]+'</span><span class="dc">'+CHECK_S+'</span><span class="dn">'+p.getDate()+'</span></button>';
     }).join('');
     return '<li class="hcard" data-item="'+hb.id+'" data-kind="habit"><div class="hhead"><div class="hleft">'+GRIP+'<div><button class="hname" data-act="edith" data-id="'+hb.id+'" aria-label="'+esc(hb.name)+'を編集">'+esc(hb.name)+'</button>'+
-      '<div class="hmeta">'+hdays(hb)+' ・ 連続 <b>'+s+'</b>日 ・ 達成率 <b>'+rate(hb)+'</b>%</div></div></div>'+
+      '<div class="hmeta">'+hdays(hb)+' ・ 連続 <b>'+s+'</b>日 ・ 達成率 <b>'+rate(hb)+'</b>%</div>'+
+      (hb.rems&&hb.rems.length?'<div class="hmeta">'+habitBell(hb)+'</div>':'')+'</div></div>'+
       '<button class="del" data-act="dh" data-id="'+hb.id+'" aria-label="'+esc(hb.name)+'を削除">削除</button></div>'+
       '<div class="week">'+week+'</div></li>';
   }).join('')+'</ul>';
@@ -829,9 +949,95 @@ function syncSheet(){
   for(i=0;i<b.length;i++)b[i].setAttribute('aria-pressed',b[i].getAttribute('data-c')===sh.color?'true':'false');
   b=document.querySelectorAll('[data-act="wd"]');
   for(i=0;i<b.length;i++)b[i].setAttribute('aria-pressed',sh.days.indexOf(+b[i].getAttribute('data-d'))>-1?'true':'false');
+  renderRems();
+}
+function renderRems(){
+  var isHabit=sh.type==='habit';
+  document.getElementById('rems').innerHTML=sh.rems.map(function(r,i){
+    return '<div class="rem">'+
+      (isHabit?'':'<input class="field rd" type="date" data-i="'+i+'" value="'+esc(r.d||'')+'" aria-label="通知する日">')+
+      '<input class="field rt" type="time" data-i="'+i+'" value="'+esc(r.t||'')+'" aria-label="通知する時刻">'+
+      '<button type="button" class="x" data-act="rdel" data-i="'+i+'" aria-label="この通知を消す">'+XICON+'</button></div>';
+  }).join('');
+  var hint;
+  if(!sh.rems.length)hint=isHabit?'時刻を追加すると、選んだ曜日に毎回通知が届きます。いくつでも追加できます。':'日付と時刻を自由に、いくつでも追加できます。';
+  else hint=isHabit?'選んだ曜日のこの時刻に、毎回通知が届きます。':'期限を変えると、通知の日付も同じだけずれます。';
+  hint+=' 保存したあと「カレンダーに登録」で通知が届くようになります。';
+  document.getElementById('remHint').textContent=hint;
+  var saved=null;
+  if(sh.mode==='edit')saved=sh.type==='habit'?findHabit(sh.id):findTask(sh.id);
+  document.getElementById('calBtn').hidden=!(saved&&saved.rems&&saved.rems.length);
+}
+function closeSheet(){
+  document.getElementById('back').hidden=true;
+  document.getElementById('sheet').hidden=true;
+  document.getElementById('calSheet').hidden=true;
+  sh=null;cal=null;
+}
+
+/* ---------- calendar sheet ---------- */
+var cal=null;
+function calItem(){return cal?(cal.type==='habit'?findHabit(cal.id):findTask(cal.id)):null}
+function openCal(type,id){
+  document.getElementById('sheet').hidden=true;
+  sh=null;
+  cal={type:type,id:id};
+  if(!calItem()){cal=null;return}
+  renderCal();
+  document.getElementById('back').hidden=false;
+  document.getElementById('calSheet').hidden=false;
+}
+function renderCal(){
+  var item=calItem(), el=document.getElementById('calSheet');
+  if(!item){closeSheet();return}
+  var type=cal.type, name=type==='habit'?item.name:item.text, list=item.rems||[];
+  var future=list.filter(function(r){return !isPast(type,r)}).length;
+  var h='<h2 class="calh">カレンダーに登録</h2>'+
+    '<p class="calp">「'+esc(name)+'」の通知を、スマホのカレンダーに予定として入れます。<b>「登録」を押してGoogleカレンダーが開いたら「保存」</b>を押してください。'+
+    (type==='habit'?'選んだ曜日に毎回くり返す予定になります。':'')+'</p>';
+  if(!list.length)h+='<div class="empty">通知がありません。編集画面で「＋ 通知を追加」から設定できます。</div>';
+  h+='<div class="rems">'+list.map(function(r,i){
+    var past=isPast(type,r);
+    var st=past?'<small>過ぎています</small>':r.reg?'<small class="ok">登録済み</small>':'<small>まだ登録していません</small>';
+    var btn=past?'':'<a class="calgo'+(r.reg?' again':'')+'" href="'+esc(gcalUrl(remEvent(type,item,r)))+'" target="_blank" rel="noopener" data-act="reg" data-i="'+i+'">'+(r.reg?'もう一度':'登録')+'</a>';
+    return '<div class="calrow"><div class="when">'+esc(remLabel(type,r,item))+st+'</div>'+btn+'</div>';
+  }).join('')+'</div>';
+  h+='<p class="calp">通知が予定の時刻より早く鳴る設定になっていたら、保存前に通知を<b>「イベント開始時」（0分前）</b>に変えてください。</p>';
+  h+='<p class="calp">アプリで時刻を変えたり削除したりしても、カレンダーの予定は自動では変わりません。不要になった予定はカレンダーで消してください。</p>';
+  h+='<div class="acts">'+(future?'<button type="button" class="btn" data-act="ics">ファイルでまとめて追加</button>':'')+
+    '<button type="button" class="btn main" data-act="close">閉じる</button></div>';
+  el.innerHTML=h;
+}
+function markReg(i){
+  var item=calItem();
+  if(!item||!item.rems||!item.rems[i])return;
+  item.rems[i].reg=true;
+  changed();
+  setTimeout(renderCal,50);
+}
+function downloadIcs(){
+  var item=calItem();
+  if(!item)return;
+  var type=cal.type;
+  var blob=new Blob([buildIcs(type,item)],{type:'text/calendar;charset=utf-8'});
+  var url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url;a.download=(type==='habit'?'habit':'task')+'-'+item.id+'.ics';
+  document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(url);if(a.parentNode)a.parentNode.removeChild(a)},1000);
+  (item.rems||[]).forEach(function(r){if(!isPast(type,r))r.reg=true});
+  changed();
+  renderCal();
+}
+function setDue(nd){
+  var od=sh.due;
+  if(od&&nd&&od!==nd){
+    var n=diffDays(nd,od);
+    sh.rems.forEach(function(r){if(validD(r.d)){r.d=addDays(r.d,n);r.reg=false}});
+  }
+  sh.due=nd;
 }
 function openSheet(mode,type,id,due0){
-  sh={mode:mode,type:type,id:id||null,due:today,color:'teal',days:[0,1,2,3,4,5,6]};
+  sh={mode:mode,type:type,id:id||null,due:today,color:'teal',days:[0,1,2,3,4,5,6],rems:[]};
   var text='',memo='',t,h;
   if(mode==='edit'){
     if(type==='task'){
@@ -844,6 +1050,7 @@ function openSheet(mode,type,id,due0){
       text=h.name;
       if(h.days&&h.days.length)sh.days=h.days.slice();
     }
+    sh.rems=JSON.parse(JSON.stringify((t||h).rems||[]));
   }
   if(mode==='add'&&due0!==undefined)sh.due=due0;
   document.getElementById('newText').value=text;
@@ -853,39 +1060,44 @@ function openSheet(mode,type,id,due0){
   document.getElementById('sheet').hidden=false;
   if(mode==='add'){setTimeout(function(){document.getElementById('newText').focus()},30)}
 }
-function closeSheet(){
-  document.getElementById('back').hidden=true;
-  document.getElementById('sheet').hidden=true;
-  sh=null;
-}
 function submitSheet(){
   var inp=document.getElementById('newText');
   var text=inp.value.replace(/\s+/g,' ').trim();
   if(!text){inp.focus();return false}
   var memo=document.getElementById('newMemo').value.trim();
   var days=ORDER.filter(function(d){return sh.days.indexOf(d)>-1});
-  var t,h;
+  var rems=cleanRems(sh.type,sh.rems);
+  var t,h,item=null;
   if(sh.type==='habit'){
     if(sh.mode==='edit'){
       h=findHabit(sh.id);
-      if(h){h.name=text;h.days=days.length>=7?null:days;if(!h.days)delete h.days}
+      if(h){
+        var oldDays=hdays(h);
+        h.name=text;h.days=days.length>=7?null:days;if(!h.days)delete h.days;
+        if(hdays(h)!==oldDays)rems.forEach(function(r){r.reg=false});
+      }
     }else{
       h={id:uid(),name:text,created:today};
       if(days.length<7)h.days=days;
       S.habits.push(h);
       tab='habits';
     }
+    if(h){if(rems.length)h.rems=rems;else delete h.rems;item=h}
   }else{
     if(sh.mode==='edit'){
       t=findTask(sh.id);
       if(t){t.text=text;t.memo=memo;t.due=sh.due||null;t.color=sh.color}
     }else{
-      S.tasks.push({id:uid(),text:text,memo:memo,due:sh.due||null,done:false,color:sh.color});
+      t={id:uid(),text:text,memo:memo,due:sh.due||null,done:false,color:sh.color};
+      S.tasks.push(t);
       if(tab==='habits')tab='today';
     }
+    if(t){if(rems.length)t.rems=rems;else delete t.rems;item=t}
   }
+  var type=sh.type;
   closeSheet();
   changed();
+  if(item&&pendingRems(type,item))openCal(type,item.id);
   return true;
 }
 
@@ -922,9 +1134,23 @@ document.addEventListener('click',function(e){
   else if(act==='type'&&sh){sh.type=el.getAttribute('data-type');syncSheet()}
   else if(act==='due'&&sh){
     var k=el.getAttribute('data-due');
-    sh.due=k==='today'?today:k==='tomorrow'?addDays(today,1):'';
+    setDue(k==='today'?today:k==='tomorrow'?addDays(today,1):'');
     syncSheet();
   }
+  else if(act==='radd'&&sh){
+    var last=sh.rems[sh.rems.length-1];
+    sh.rems.push({d:sh.due||(last&&last.d)||today,t:last?last.t:'09:00',reg:false});
+    renderRems();
+    var ins=document.querySelectorAll('#rems .rt');
+    if(ins.length)ins[ins.length-1].focus();
+  }
+  else if(act==='rdel'&&sh){sh.rems.splice(+el.getAttribute('data-i'),1);renderRems()}
+  else if(act==='calfrom'&&sh&&sh.mode==='edit'){
+    var ct=sh.type, cid=sh.id;
+    if(submitSheet())openCal(ct,cid);
+  }
+  else if(act==='reg')markReg(+el.getAttribute('data-i'));
+  else if(act==='ics')downloadIcs();
   else if(act==='col'&&sh){sh.color=el.getAttribute('data-c');syncSheet()}
   else if(act==='wd'&&sh){
     var n=+el.getAttribute('data-d'), p=sh.days.indexOf(n);
@@ -941,8 +1167,18 @@ document.addEventListener('contextmenu',function(e){
   if(drag||(e.target.closest&&e.target.closest('.grip')))e.preventDefault();
 });
 document.getElementById('dueDate').addEventListener('change',function(e){
-  if(sh){sh.due=e.target.value||'';syncSheet()}
+  if(sh){setDue(e.target.value||'');syncSheet()}
 });
+function remInput(e){
+  if(!sh)return;
+  var i=+e.target.getAttribute('data-i'), r=sh.rems[i];
+  if(!r)return;
+  if(e.target.classList.contains('rd'))r.d=e.target.value;
+  else if(e.target.classList.contains('rt'))r.t=e.target.value;
+  r.reg=false;
+}
+document.getElementById('rems').addEventListener('change',remInput);
+document.getElementById('rems').addEventListener('input',remInput);
 document.getElementById('sheet').addEventListener('submit',function(e){
   e.preventDefault();
   if(sh)submitSheet();
@@ -955,7 +1191,7 @@ document.addEventListener('keydown',function(e){
     if(row)nudge(row.getAttribute('data-item'),row.getAttribute('data-kind'),e.key==='ArrowUp'?-1:1);
     return;
   }
-  if(e.key==='Escape'&&!document.getElementById('sheet').hidden)closeSheet();
+  if(e.key==='Escape'&&(!document.getElementById('sheet').hidden||!document.getElementById('calSheet').hidden))closeSheet();
 });
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState!=='visible')return;
